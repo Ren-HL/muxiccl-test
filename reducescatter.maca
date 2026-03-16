@@ -1,0 +1,76 @@
+// ReduceScatter engine plugin (mccl-test)
+#include "common.h"
+#include "verifiable.h"
+
+static void reducescatter_getBuffSize(size_t *sendBytes, size_t *recvBytes,
+                                      size_t countBytes, int nranks,
+                                      size_t typeSize) {
+  (void)typeSize;
+  *sendBytes = countBytes * (size_t)nranks;
+  *recvBytes = countBytes;
+}
+
+static void reducescatter_initData(threadArgs_t *args, int root, DataType type,
+                                   RedOp op, int in_place) {
+  (void)op;
+  verifiable_init_reducescatter(args, root, type, in_place);
+}
+
+static void reducescatter_runTest(threadArgs_t *args, int root, DataType type,
+                                  RedOp op, const void *sendbuff,
+                                  void *recvbuff, mcStream_t stream) {
+  (void)root;
+  mcclDataType_t mccl_type = toMcclType(type);
+  mcclRedOp_t mccl_op = (op == OP_SUM) ? mcclSum : mcclSum;
+  MCCLCHECK(mcclReduceScatter(sendbuff, recvbuff, args->count, mccl_type,
+                              mccl_op, args->comm, stream));
+}
+
+static void reducescatter_getBw(size_t sendBytes, size_t recvBytes, int nranks,
+                                double timeSec, double *algbw,
+                                double *busbw) {
+  (void)sendBytes;
+  (void)nranks;
+  if (timeSec <= 0.0) {
+    *algbw = 0.0;
+    *busbw = 0.0;
+    return;
+  }
+  double bytes = (double)recvBytes;
+  *algbw = bytes / timeSec / 1e9;
+  *busbw = *algbw;
+}
+
+static int reducescatter_checkData(threadArgs_t *args, int root, DataType type,
+                                   RedOp op, int in_place) {
+  (void)op;
+  (void)in_place;
+  return verifiable_check_reducescatter(args, root, type);
+}
+
+static size_t reducescatter_getInplaceOffset(size_t sendBytes, size_t recvBytes,
+                                             int nranks, int rank) {
+  (void)sendBytes;
+  (void)recvBytes;
+  (void)nranks;
+  (void)rank;
+  return 0;
+}
+
+testEngine_t mcclTestEngine = {
+    .name = "reducescatter",
+    .defaultSizeBytes = (1 << 18) * sizeof(float),
+    .supportsInplace = 0,
+    .defaultType = DATA_FLOAT32,
+    .defaultTypeName = "float32",
+    .defaultOp = OP_SUM,
+    .defaultOpName = "sum",
+    .defaultRoot = 0,
+    .countMode = COUNT_FROM_RECV,
+    .getBuffSize = reducescatter_getBuffSize,
+    .initData = reducescatter_initData,
+    .runTest = reducescatter_runTest,
+    .getInplaceOffset = reducescatter_getInplaceOffset,
+    .getBw = reducescatter_getBw,
+    .checkData = reducescatter_checkData,
+};

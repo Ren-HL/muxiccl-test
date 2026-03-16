@@ -1,0 +1,797 @@
+#include "verifiable.h"
+#include <math.h>
+#include <stdint.h>
+
+static __device__ __forceinline__ uint16_t d_float_to_bf16_rn(float f) {
+  union {
+    float f;
+    uint32_t u;
+  } v;
+  v.f = f;
+  uint32_t u = v.u;
+  uint32_t lsb = (u >> 16) & 1u;
+  u += 0x7FFFu + lsb;
+  return (uint16_t)(u >> 16);
+}
+
+static __device__ __forceinline__ float d_bf16_to_float(uint16_t b) {
+  union {
+    uint32_t u;
+    float f;
+  } v;
+  v.u = ((uint32_t)b) << 16;
+  return v.f;
+}
+
+static __device__ __forceinline__ uint16_t d_float_to_half_rn(float f) {
+  union {
+    float f;
+    uint32_t u;
+  } v;
+  v.f = f;
+  uint32_t u = v.u;
+  uint32_t sign = (u >> 16) & 0x8000u;
+  uint32_t mantissa = u & 0x007FFFFFu;
+  int32_t exp = (int32_t)((u >> 23) & 0xFFu) - 127;
+  if (exp > 15) {
+    return (uint16_t)(sign | 0x7C00u);
+  }
+  if (exp < -14) {
+    if (exp < -24) {
+      return (uint16_t)sign;
+    }
+    mantissa |= 0x00800000u;
+    uint32_t shift = (uint32_t)(-exp - 14);
+    uint32_t half_mant = mantissa >> (shift + 13);
+    uint32_t remainder = mantissa & ((1u << (shift + 13)) - 1u);
+    uint32_t round_bit = 1u << (shift + 12);
+    if (remainder > round_bit ||
+        (remainder == round_bit && (half_mant & 1u))) {
+      half_mant++;
+    }
+    return (uint16_t)(sign | half_mant);
+  }
+  uint32_t half_exp = (uint32_t)(exp + 15);
+  uint32_t half_mant = mantissa >> 13;
+  uint32_t remainder = mantissa & 0x1FFFu;
+  if (remainder > 0x1000u ||
+      (remainder == 0x1000u && (half_mant & 1u))) {
+    half_mant++;
+    if (half_mant == 0x400u) {
+      half_mant = 0;
+      half_exp++;
+      if (half_exp >= 31) {
+        return (uint16_t)(sign | 0x7C00u);
+      }
+    }
+  }
+  return (uint16_t)(sign | (half_exp << 10) | (half_mant & 0x3FFu));
+}
+
+static __device__ __forceinline__ float d_half_to_float(uint16_t h) {
+  uint32_t sign = (uint32_t)(h & 0x8000u) << 16;
+  uint32_t exp = (h >> 10) & 0x1Fu;
+  uint32_t mant = h & 0x3FFu;
+  uint32_t u = 0;
+  if (exp == 0) {
+    if (mant == 0) {
+      u = sign;
+    } else {
+      exp = 1;
+      while ((mant & 0x400u) == 0) {
+        mant <<= 1;
+        exp--;
+      }
+      mant &= 0x3FFu;
+      exp = exp + (127 - 15);
+      u = sign | (exp << 23) | (mant << 13);
+    }
+  } else if (exp == 31) {
+    u = sign | 0x7F800000u | (mant << 13);
+  } else {
+    exp = exp + (127 - 15);
+    u = sign | (exp << 23) | (mant << 13);
+  }
+  union {
+    uint32_t u;
+    float f;
+  } v;
+  v.u = u;
+  return v.f;
+}
+
+static __device__ __forceinline__ void d_store_value(void *base, size_t idx,
+                                                     DataType dt, float fval,
+                                                     int32_t ival) {
+  switch (dt) {
+  case DATA_FLOAT16: {
+    uint16_t h = d_float_to_half_rn(fval);
+    ((uint16_t *)base)[idx] = h;
+    break;
+  }
+  case DATA_BFLOAT16: {
+    uint16_t b = d_float_to_bf16_rn(fval);
+    ((uint16_t *)base)[idx] = b;
+    break;
+  }
+  case DATA_FLOAT32: {
+    ((float *)base)[idx] = fval;
+    break;
+  }
+  case DATA_INT32: {
+    ((int32_t *)base)[idx] = ival;
+    break;
+  }
+  case DATA_INT8:
+  default: {
+    ((int8_t *)base)[idx] = (int8_t)ival;
+    break;
+  }
+  }
+}
+
+static __device__ __forceinline__ float d_load_float(const void *base,
+                                                     size_t idx, DataType dt) {
+  switch (dt) {
+  case DATA_FLOAT16:
+    return d_half_to_float(((const uint16_t *)base)[idx]);
+  case DATA_BFLOAT16:
+    return d_bf16_to_float(((const uint16_t *)base)[idx]);
+  case DATA_FLOAT32:
+    return ((const float *)base)[idx];
+  case DATA_INT32:
+    return (float)(((const int32_t *)base)[idx]);
+  case DATA_INT8:
+  default:
+    return (float)(((const int8_t *)base)[idx]);
+  }
+}
+
+static __device__ __forceinline__ int32_t d_load_int(const void *base,
+                                                     size_t idx, DataType dt) {
+  switch (dt) {
+  case DATA_INT32:
+    return ((const int32_t *)base)[idx];
+  case DATA_INT8:
+    return (int32_t)((const int8_t *)base)[idx];
+  case DATA_FLOAT16:
+  case DATA_BFLOAT16:
+  case DATA_FLOAT32:
+  default:
+    return (int32_t)d_load_float(base, idx, dt);
+  }
+}
+
+static __global__ void kernel_set_value(void *base, DataType dt, size_t idx,
+                                        float fval, int32_t ival) {
+  if (blockIdx.x == 0 && threadIdx.x == 0) {
+    d_store_value(base, idx, dt, fval, ival);
+  }
+}
+
+static __global__ void kernel_fill_samples(void *base, DataType dt,
+                                           const size_t *samples, int n,
+                                           size_t idx_offset, int32_t base_val,
+                                           float alpha) {
+  int tid = blockIdx.x * blockDim.x + threadIdx.x;
+  if (tid >= n) {
+    return;
+  }
+  size_t idx = samples[tid];
+  size_t global_idx = idx + idx_offset;
+  if (dt == DATA_INT8 || dt == DATA_INT32) {
+    int32_t v = base_val + (int32_t)global_idx;
+    d_store_value(base, idx, dt, 0.0f, v);
+  } else {
+    float v = (float)base_val + alpha * (float)global_idx;
+    d_store_value(base, idx, dt, v, 0);
+  }
+}
+
+static __global__ void kernel_check_reduce(const void *base, DataType dt,
+                                           const size_t *samples, int n,
+                                           int32_t nranks, float alpha,
+                                           float atol, float rtol,
+                                           int *errors) {
+  int tid = blockIdx.x * blockDim.x + threadIdx.x;
+  if (tid >= n) {
+    return;
+  }
+  size_t idx = samples[tid];
+  int32_t base_sum = nranks * (nranks - 1) / 2;
+  if (dt == DATA_INT8 || dt == DATA_INT32) {
+    int32_t expected = base_sum + (int32_t)idx * nranks;
+    if (dt == DATA_INT8) {
+      expected = (int32_t)(int8_t)expected;
+    }
+    int32_t got = d_load_int(base, idx, dt);
+    if (got != expected) {
+      atomicAdd(errors, 1);
+    }
+  } else {
+    float expected = (float)base_sum + alpha * (float)idx * (float)nranks;
+    float got = d_load_float(base, idx, dt);
+    float diff = fabsf(got - expected);
+    float tol = atol + rtol * fabsf(expected);
+    if (diff > tol) {
+      atomicAdd(errors, 1);
+    }
+  }
+}
+
+static __global__ void kernel_check_gather(const void *base, DataType dt,
+                                           const size_t *samples, int n,
+                                           size_t count, int32_t nranks,
+                                           float alpha, float atol, float rtol,
+                                           int *errors) {
+  int tid = blockIdx.x * blockDim.x + threadIdx.x;
+  int total = n * nranks;
+  if (tid >= total) {
+    return;
+  }
+  int r = tid / n;
+  int s = tid - r * n;
+  size_t idx = (size_t)r * count + samples[s];
+  if (dt == DATA_INT8 || dt == DATA_INT32) {
+    int32_t expected = r + (int32_t)samples[s];
+    if (dt == DATA_INT8) {
+      expected = (int32_t)(int8_t)expected;
+    }
+    int32_t got = d_load_int(base, idx, dt);
+    if (got != expected) {
+      atomicAdd(errors, 1);
+    }
+  } else {
+    float expected = (float)r + alpha * (float)samples[s];
+    float got = d_load_float(base, idx, dt);
+    float diff = fabsf(got - expected);
+    float tol = atol + rtol * fabsf(expected);
+    if (diff > tol) {
+      atomicAdd(errors, 1);
+    }
+  }
+}
+
+static __global__ void kernel_check_broadcast(const void *base, DataType dt,
+                                              const size_t *samples, int n,
+                                              int32_t root, float alpha,
+                                              float atol, float rtol,
+                                              int *errors) {
+  int tid = blockIdx.x * blockDim.x + threadIdx.x;
+  if (tid >= n) {
+    return;
+  }
+  size_t idx = samples[tid];
+  if (dt == DATA_INT8 || dt == DATA_INT32) {
+    int32_t expected = root + (int32_t)idx;
+    if (dt == DATA_INT8) {
+      expected = (int32_t)(int8_t)expected;
+    }
+    int32_t got = d_load_int(base, idx, dt);
+    if (got != expected) {
+      atomicAdd(errors, 1);
+    }
+  } else {
+    float expected = (float)root + alpha * (float)idx;
+    float got = d_load_float(base, idx, dt);
+    float diff = fabsf(got - expected);
+    float tol = atol + rtol * fabsf(expected);
+    if (diff > tol) {
+      atomicAdd(errors, 1);
+    }
+  }
+}
+
+static __global__ void kernel_check_reducescatter(const void *base, DataType dt,
+                                                  const size_t *samples, int n,
+                                                  size_t count, int32_t rank,
+                                                  int32_t nranks, float alpha,
+                                                  float atol, float rtol,
+                                                  int *errors) {
+  int tid = blockIdx.x * blockDim.x + threadIdx.x;
+  if (tid >= n) {
+    return;
+  }
+  size_t local_idx = samples[tid];
+  size_t global_idx = (size_t)rank * count + local_idx;
+  int32_t base_sum = nranks * (nranks - 1) / 2;
+  if (dt == DATA_INT8 || dt == DATA_INT32) {
+    int32_t expected = base_sum + (int32_t)global_idx * nranks;
+    if (dt == DATA_INT8) {
+      expected = (int32_t)(int8_t)expected;
+    }
+    int32_t got = d_load_int(base, local_idx, dt);
+    if (got != expected) {
+      atomicAdd(errors, 1);
+    }
+  } else {
+    float expected =
+        (float)base_sum + alpha * (float)global_idx * (float)nranks;
+    float got = d_load_float(base, local_idx, dt);
+    float diff = fabsf(got - expected);
+    float tol = atol + rtol * fabsf(expected);
+    if (diff > tol) {
+      atomicAdd(errors, 1);
+    }
+  }
+}
+
+static void device_set_scalar(void *base, DataType type, float fval,
+                              int32_t ival, mcStream_t stream) {
+  kernel_set_value<<<1, 1, 0, stream>>>(base, type, 0, fval, ival);
+}
+
+static void device_fill_samples(threadArgs_t *args, DataType type,
+                                int32_t base_val, float alpha) {
+  size_t samples[32];
+  int n =
+      build_samples(args, samples, (int)(sizeof(samples) / sizeof(samples[0])));
+  if (n <= 0) {
+    return;
+  }
+  size_t *d_samples = NULL;
+  MCCHECK(mcMalloc(&d_samples, (size_t)n * sizeof(size_t)));
+  MCCHECK(mcMemcpy(d_samples, samples, (size_t)n * sizeof(size_t),
+                   mcMemcpyHostToDevice));
+  int block = 256;
+  int grid = (n + block - 1) / block;
+  kernel_fill_samples<<<grid, block, 0, args->stream>>>(
+      args->sendbuff, type, d_samples, n, 0, base_val, alpha);
+  MCCHECK(mcStreamSynchronize(args->stream));
+  MCCHECK(mcFree(d_samples));
+}
+
+static void device_fill_samples_offset(threadArgs_t *args, DataType type,
+                                       int32_t base_val, size_t offset,
+                                       size_t idx_offset, float alpha) {
+  size_t samples[32];
+  int n =
+      build_samples(args, samples, (int)(sizeof(samples) / sizeof(samples[0])));
+  if (n <= 0) {
+    return;
+  }
+  size_t *d_samples = NULL;
+  MCCHECK(mcMalloc(&d_samples, (size_t)n * sizeof(size_t)));
+  MCCHECK(mcMemcpy(d_samples, samples, (size_t)n * sizeof(size_t),
+                   mcMemcpyHostToDevice));
+  int block = 256;
+  int grid = (n + block - 1) / block;
+  kernel_fill_samples<<<grid, block, 0, args->stream>>>(
+      (char *)args->sendbuff + offset, type, d_samples, n, idx_offset, base_val,
+      alpha);
+  MCCHECK(mcStreamSynchronize(args->stream));
+  MCCHECK(mcFree(d_samples));
+}
+
+static int device_check_reduce_like(threadArgs_t *args, DataType type,
+                                    float alpha) {
+  size_t samples[32];
+  int n =
+      build_samples(args, samples, (int)(sizeof(samples) / sizeof(samples[0])));
+  if (n <= 0) {
+    return 0;
+  }
+  size_t *d_samples = NULL;
+  int *d_errors = NULL;
+  MCCHECK(mcMalloc(&d_samples, (size_t)n * sizeof(size_t)));
+  MCCHECK(mcMalloc(&d_errors, sizeof(int)));
+  MCCHECK(mcMemcpy(d_samples, samples, (size_t)n * sizeof(size_t),
+                   mcMemcpyHostToDevice));
+  MCCHECK(mcMemset(d_errors, 0, sizeof(int)));
+  float atol = 0.0f;
+  float rtol = 0.0f;
+  dtypeGetTolerances(type, &atol, &rtol);
+  if (type == DATA_FLOAT16 || type == DATA_BFLOAT16) {
+    float scale = (float)args->nranks;
+    atol *= scale;
+    rtol *= scale;
+  }
+  int block = 256;
+  int grid = (n + block - 1) / block;
+  kernel_check_reduce<<<grid, block, 0, args->stream>>>(
+      args->recvbuff, type, d_samples, n, args->nranks, alpha, atol, rtol,
+      d_errors);
+  MCCHECK(mcStreamSynchronize(args->stream));
+  int errors = 0;
+  MCCHECK(mcMemcpy(&errors, d_errors, sizeof(int), mcMemcpyDeviceToHost));
+  MCCHECK(mcFree(d_samples));
+  MCCHECK(mcFree(d_errors));
+  return errors;
+}
+
+static int device_check_gather_like(threadArgs_t *args, DataType type,
+                                    float alpha) {
+  size_t samples[32];
+  int n =
+      build_samples(args, samples, (int)(sizeof(samples) / sizeof(samples[0])));
+  if (n <= 0) {
+    return 0;
+  }
+  size_t *d_samples = NULL;
+  int *d_errors = NULL;
+  MCCHECK(mcMalloc(&d_samples, (size_t)n * sizeof(size_t)));
+  MCCHECK(mcMalloc(&d_errors, sizeof(int)));
+  MCCHECK(mcMemcpy(d_samples, samples, (size_t)n * sizeof(size_t),
+                   mcMemcpyHostToDevice));
+  MCCHECK(mcMemset(d_errors, 0, sizeof(int)));
+  float atol = 0.0f;
+  float rtol = 0.0f;
+  dtypeGetTolerances(type, &atol, &rtol);
+  if (type == DATA_FLOAT16 || type == DATA_BFLOAT16) {
+    float scale = (float)args->nranks;
+    atol *= scale;
+    rtol *= scale;
+  }
+  int total = n * args->nranks;
+  int block = 256;
+  int grid = (total + block - 1) / block;
+  kernel_check_gather<<<grid, block, 0, args->stream>>>(
+      args->recvbuff, type, d_samples, n, args->count, args->nranks, alpha,
+      atol, rtol, d_errors);
+  MCCHECK(mcStreamSynchronize(args->stream));
+  int errors = 0;
+  MCCHECK(mcMemcpy(&errors, d_errors, sizeof(int), mcMemcpyDeviceToHost));
+  MCCHECK(mcFree(d_samples));
+  MCCHECK(mcFree(d_errors));
+  return errors;
+}
+
+static int device_check_broadcast_like(threadArgs_t *args, DataType type,
+                                       int root, float alpha) {
+  size_t samples[32];
+  int n =
+      build_samples(args, samples, (int)(sizeof(samples) / sizeof(samples[0])));
+  if (n <= 0) {
+    return 0;
+  }
+  size_t *d_samples = NULL;
+  int *d_errors = NULL;
+  MCCHECK(mcMalloc(&d_samples, (size_t)n * sizeof(size_t)));
+  MCCHECK(mcMalloc(&d_errors, sizeof(int)));
+  MCCHECK(mcMemcpy(d_samples, samples, (size_t)n * sizeof(size_t),
+                   mcMemcpyHostToDevice));
+  MCCHECK(mcMemset(d_errors, 0, sizeof(int)));
+  float atol = 0.0f;
+  float rtol = 0.0f;
+  dtypeGetTolerances(type, &atol, &rtol);
+  if (type == DATA_FLOAT16 || type == DATA_BFLOAT16) {
+    float scale = (float)args->nranks;
+    atol *= scale;
+    rtol *= scale;
+  }
+  int block = 256;
+  int grid = (n + block - 1) / block;
+  kernel_check_broadcast<<<grid, block, 0, args->stream>>>(
+      args->recvbuff, type, d_samples, n, root, alpha, atol, rtol, d_errors);
+  MCCHECK(mcStreamSynchronize(args->stream));
+  int errors = 0;
+  MCCHECK(mcMemcpy(&errors, d_errors, sizeof(int), mcMemcpyDeviceToHost));
+  MCCHECK(mcFree(d_samples));
+  MCCHECK(mcFree(d_errors));
+  return errors;
+}
+
+static int device_check_reducescatter(threadArgs_t *args, DataType type,
+                                      float alpha) {
+  size_t samples[32];
+  int n =
+      build_samples(args, samples, (int)(sizeof(samples) / sizeof(samples[0])));
+  if (n <= 0) {
+    return 0;
+  }
+  size_t *d_samples = NULL;
+  int *d_errors = NULL;
+  MCCHECK(mcMalloc(&d_samples, (size_t)n * sizeof(size_t)));
+  MCCHECK(mcMalloc(&d_errors, sizeof(int)));
+  MCCHECK(mcMemcpy(d_samples, samples, (size_t)n * sizeof(size_t),
+                   mcMemcpyHostToDevice));
+  MCCHECK(mcMemset(d_errors, 0, sizeof(int)));
+  float atol = 0.0f;
+  float rtol = 0.0f;
+  dtypeGetTolerances(type, &atol, &rtol);
+  int block = 256;
+  int grid = (n + block - 1) / block;
+  kernel_check_reducescatter<<<grid, block, 0, args->stream>>>(
+      args->recvbuff, type, d_samples, n, args->count, args->rank, args->nranks,
+      alpha, atol, rtol, d_errors);
+  MCCHECK(mcStreamSynchronize(args->stream));
+  int errors = 0;
+  MCCHECK(mcMemcpy(&errors, d_errors, sizeof(int), mcMemcpyDeviceToHost));
+  MCCHECK(mcFree(d_samples));
+  MCCHECK(mcFree(d_errors));
+  return errors;
+}
+
+void verifiable_init_allreduce(threadArgs_t *args, int root, DataType type,
+                               int in_place) {
+  (void)root;
+  if (!args->check_phase) {
+    MCCHECK(mcMemset(args->sendbuff, 0, args->sendBytes));
+    if (!in_place) {
+      MCCHECK(mcMemset(args->recvbuff, 0, args->recvBytes));
+    }
+    if (type == DATA_INT8 || type == DATA_INT32) {
+      device_set_scalar(args->sendbuff, type, 0.0f, args->rank, args->stream);
+    } else {
+      device_set_scalar(args->sendbuff, type, (float)args->rank, 0,
+                        args->stream);
+    }
+    MCCHECK(mcStreamSynchronize(args->stream));
+    return;
+  }
+
+  const float alpha = get_check_alpha();
+  MCCHECK(mcMemset(args->sendbuff, 0, args->sendBytes));
+  if (!in_place) {
+    MCCHECK(mcMemset(args->recvbuff, 0, args->recvBytes));
+  }
+  device_fill_samples(args, type, args->rank, alpha);
+}
+
+int verifiable_check_allreduce(threadArgs_t *args, int root, DataType type) {
+  (void)root;
+  const float alpha = get_check_alpha();
+  return device_check_reduce_like(args, type, alpha);
+}
+
+void verifiable_init_reduce(threadArgs_t *args, int root, DataType type,
+                            int in_place) {
+  (void)in_place;
+  if (!args->check_phase) {
+    MCCHECK(mcMemset(args->sendbuff, 0, args->sendBytes));
+    MCCHECK(mcMemset(args->recvbuff, 0, args->recvBytes));
+    if (type == DATA_INT8 || type == DATA_INT32) {
+      device_set_scalar(args->sendbuff, type, 0.0f, args->rank, args->stream);
+    } else {
+      device_set_scalar(args->sendbuff, type, (float)args->rank, 0,
+                        args->stream);
+    }
+    if (args->rank != root) {
+      MCCHECK(mcMemset(args->recvbuff, 0, args->recvBytes));
+    }
+    MCCHECK(mcStreamSynchronize(args->stream));
+    return;
+  }
+
+  const float alpha = get_check_alpha();
+  MCCHECK(mcMemset(args->sendbuff, 0, args->sendBytes));
+  MCCHECK(mcMemset(args->recvbuff, 0, args->recvBytes));
+  device_fill_samples(args, type, args->rank, alpha);
+  if (args->rank != root) {
+    MCCHECK(mcMemset(args->recvbuff, 0, args->recvBytes));
+  }
+}
+
+int verifiable_check_reduce(threadArgs_t *args, int root, DataType type) {
+  if (args->rank != root) {
+    return 0;
+  }
+  const float alpha = get_check_alpha();
+  return device_check_reduce_like(args, type, alpha);
+}
+
+void verifiable_init_allgather(threadArgs_t *args, int root, DataType type,
+                               int in_place) {
+  (void)root;
+  (void)in_place;
+  if (!args->check_phase) {
+    MCCHECK(mcMemset(args->recvbuff, 0, args->recvBytes));
+    MCCHECK(mcMemset(args->sendbuff, 0, args->sendBytes));
+    if (type == DATA_INT8 || type == DATA_INT32) {
+      device_set_scalar(args->sendbuff, type, 0.0f, args->rank, args->stream);
+    } else {
+      device_set_scalar(args->sendbuff, type, (float)args->rank, 0,
+                        args->stream);
+    }
+    MCCHECK(mcStreamSynchronize(args->stream));
+    return;
+  }
+
+  const float alpha = get_check_alpha();
+  MCCHECK(mcMemset(args->recvbuff, 0, args->recvBytes));
+  MCCHECK(mcMemset(args->sendbuff, 0, args->sendBytes));
+  device_fill_samples(args, type, args->rank, alpha);
+}
+
+int verifiable_check_allgather(threadArgs_t *args, int root, DataType type) {
+  (void)root;
+  const float alpha = get_check_alpha();
+  return device_check_gather_like(args, type, alpha);
+}
+
+void verifiable_init_gather(threadArgs_t *args, int root, DataType type,
+                            int in_place) {
+  (void)in_place;
+  if (!args->check_phase) {
+    MCCHECK(mcMemset(args->sendbuff, 0, args->sendBytes));
+    if (args->rank == root) {
+      MCCHECK(mcMemset(args->recvbuff, 0, args->recvBytes));
+    }
+    if (type == DATA_INT8 || type == DATA_INT32) {
+      device_set_scalar(args->sendbuff, type, 0.0f, args->rank, args->stream);
+    } else {
+      device_set_scalar(args->sendbuff, type, (float)args->rank, 0,
+                        args->stream);
+    }
+    MCCHECK(mcStreamSynchronize(args->stream));
+    return;
+  }
+
+  const float alpha = get_check_alpha();
+  MCCHECK(mcMemset(args->sendbuff, 0, args->sendBytes));
+  if (args->rank == root) {
+    MCCHECK(mcMemset(args->recvbuff, 0, args->recvBytes));
+  }
+  device_fill_samples(args, type, args->rank, alpha);
+}
+
+int verifiable_check_gather(threadArgs_t *args, int root, DataType type) {
+  if (args->rank != root) {
+    return 0;
+  }
+  const float alpha = get_check_alpha();
+  return device_check_gather_like(args, type, alpha);
+}
+
+void verifiable_init_broadcast(threadArgs_t *args, int root, DataType type,
+                               int in_place) {
+  (void)in_place;
+  if (!args->check_phase) {
+    MCCHECK(mcMemset(args->recvbuff, 0, args->recvBytes));
+    if (args->rank == root) {
+      MCCHECK(mcMemset(args->sendbuff, 0, args->sendBytes));
+      if (type == DATA_INT8 || type == DATA_INT32) {
+        device_set_scalar(args->sendbuff, type, 0.0f, root, args->stream);
+      } else {
+        device_set_scalar(args->sendbuff, type, (float)root, 0, args->stream);
+      }
+      MCCHECK(mcStreamSynchronize(args->stream));
+    }
+    return;
+  }
+
+  const float alpha = get_check_alpha();
+  MCCHECK(mcMemset(args->recvbuff, 0, args->recvBytes));
+  if (args->rank == root) {
+    MCCHECK(mcMemset(args->sendbuff, 0, args->sendBytes));
+    device_fill_samples(args, type, root, alpha);
+  }
+}
+
+int verifiable_check_broadcast(threadArgs_t *args, int root, DataType type) {
+  const float alpha = get_check_alpha();
+  return device_check_broadcast_like(args, type, root, alpha);
+}
+
+void verifiable_init_reducescatter(threadArgs_t *args, int root, DataType type,
+                                   int in_place) {
+  (void)root;
+  (void)in_place;
+  if (!args->check_phase) {
+    MCCHECK(mcMemset(args->sendbuff, 0, args->sendBytes));
+    MCCHECK(mcMemset(args->recvbuff, 0, args->recvBytes));
+    if (type == DATA_INT8 || type == DATA_INT32) {
+      device_set_scalar(args->sendbuff, type, 0.0f, args->rank, args->stream);
+    } else {
+      device_set_scalar(args->sendbuff, type, (float)args->rank, 0,
+                        args->stream);
+    }
+    MCCHECK(mcStreamSynchronize(args->stream));
+    return;
+  }
+
+  const float alpha = get_check_alpha();
+  MCCHECK(mcMemset(args->sendbuff, 0, args->sendBytes));
+  MCCHECK(mcMemset(args->recvbuff, 0, args->recvBytes));
+  size_t type_size = dtypeSize(type);
+  for (int r = 0; r < args->nranks; r++) {
+    size_t offset = (size_t)r * args->count * type_size;
+    size_t idx_offset = (size_t)r * args->count;
+    device_fill_samples_offset(args, type, args->rank, offset, idx_offset,
+                               alpha);
+  }
+}
+
+int verifiable_check_reducescatter(threadArgs_t *args, int root, DataType type) {
+  (void)root;
+  const float alpha = get_check_alpha();
+  return device_check_reducescatter(args, type, alpha);
+}
+
+void verifiable_init_scatter(threadArgs_t *args, int root, DataType type,
+                             int in_place) {
+  (void)in_place;
+  if (!args->check_phase) {
+    MCCHECK(mcMemset(args->recvbuff, 0, args->recvBytes));
+    if (args->rank == root) {
+      MCCHECK(mcMemset(args->sendbuff, 0, args->sendBytes));
+      if (type == DATA_INT8 || type == DATA_INT32) {
+        device_set_scalar(args->sendbuff, type, 0.0f, root, args->stream);
+      } else {
+        device_set_scalar(args->sendbuff, type, (float)root, 0, args->stream);
+      }
+      MCCHECK(mcStreamSynchronize(args->stream));
+    }
+    return;
+  }
+
+  const float alpha = get_check_alpha();
+  MCCHECK(mcMemset(args->recvbuff, 0, args->recvBytes));
+  if (args->rank == root) {
+    MCCHECK(mcMemset(args->sendbuff, 0, args->sendBytes));
+    size_t type_size = dtypeSize(type);
+    for (int r = 0; r < args->nranks; r++) {
+      size_t offset = (size_t)r * args->count * type_size;
+      device_fill_samples_offset(args, type, r, offset, 0, alpha);
+    }
+  }
+}
+
+int verifiable_check_scatter(threadArgs_t *args, int root, DataType type) {
+  (void)root;
+  const float alpha = get_check_alpha();
+  return device_check_broadcast_like(args, type, args->rank, alpha);
+}
+
+void verifiable_init_sendrecv(threadArgs_t *args, int root, DataType type,
+                              int in_place) {
+  (void)root;
+  (void)in_place;
+  if (!args->check_phase) {
+    MCCHECK(mcMemset(args->sendbuff, 0, args->sendBytes));
+    MCCHECK(mcMemset(args->recvbuff, 0, args->recvBytes));
+    if (type == DATA_INT8 || type == DATA_INT32) {
+      device_set_scalar(args->sendbuff, type, 0.0f, args->rank, args->stream);
+    } else {
+      device_set_scalar(args->sendbuff, type, (float)args->rank, 0,
+                        args->stream);
+    }
+    MCCHECK(mcStreamSynchronize(args->stream));
+    return;
+  }
+
+  const float alpha = get_check_alpha();
+  MCCHECK(mcMemset(args->sendbuff, 0, args->sendBytes));
+  MCCHECK(mcMemset(args->recvbuff, 0, args->recvBytes));
+  device_fill_samples(args, type, args->rank, alpha);
+}
+
+int verifiable_check_sendrecv(threadArgs_t *args, int root, DataType type) {
+  (void)root;
+  const float alpha = get_check_alpha();
+  int src = (args->rank - 1 + args->nranks) % args->nranks;
+  return device_check_broadcast_like(args, type, src, alpha);
+}
+
+void verifiable_init_alltoall(threadArgs_t *args, int root, DataType type,
+                              int in_place) {
+  (void)root;
+  (void)in_place;
+  if (!args->check_phase) {
+    MCCHECK(mcMemset(args->sendbuff, 0, args->sendBytes));
+    MCCHECK(mcMemset(args->recvbuff, 0, args->recvBytes));
+    if (type == DATA_INT8 || type == DATA_INT32) {
+      device_set_scalar(args->sendbuff, type, 0.0f, args->rank, args->stream);
+    } else {
+      device_set_scalar(args->sendbuff, type, (float)args->rank, 0,
+                        args->stream);
+    }
+    MCCHECK(mcStreamSynchronize(args->stream));
+    return;
+  }
+
+  const float alpha = get_check_alpha();
+  MCCHECK(mcMemset(args->sendbuff, 0, args->sendBytes));
+  MCCHECK(mcMemset(args->recvbuff, 0, args->recvBytes));
+  size_t type_size = dtypeSize(type);
+  for (int r = 0; r < args->nranks; r++) {
+    size_t offset = (size_t)r * args->count * type_size;
+    device_fill_samples_offset(args, type, args->rank, offset, 0, alpha);
+  }
+}
+
+int verifiable_check_alltoall(threadArgs_t *args, int root, DataType type) {
+  (void)root;
+  const float alpha = get_check_alpha();
+  return device_check_gather_like(args, type, alpha);
+}

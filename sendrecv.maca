@@ -1,0 +1,81 @@
+// SendRecv engine plugin (mccl-test)
+#include "common.h"
+#include "verifiable.h"
+
+static void sendrecv_getBuffSize(size_t *sendBytes, size_t *recvBytes,
+                                 size_t countBytes, int nranks,
+                                 size_t typeSize) {
+  (void)nranks;
+  (void)typeSize;
+  *sendBytes = countBytes;
+  *recvBytes = countBytes;
+}
+
+static void sendrecv_initData(threadArgs_t *args, int root, DataType type,
+                              RedOp op, int in_place) {
+  (void)op;
+  verifiable_init_sendrecv(args, root, type, in_place);
+}
+
+static void sendrecv_runTest(threadArgs_t *args, int root, DataType type,
+                             RedOp op, const void *sendbuff, void *recvbuff,
+                             mcStream_t stream) {
+  (void)root;
+  (void)op;
+  mcclDataType_t mccl_type = toMcclType(type);
+  int dst = (args->rank + 1) % args->nranks;
+  int src = (args->rank - 1 + args->nranks) % args->nranks;
+  MCCLCHECK(mcclGroupStart());
+  MCCLCHECK(
+      mcclSend(sendbuff, args->count, mccl_type, dst, args->comm, stream));
+  MCCLCHECK(
+      mcclRecv(recvbuff, args->count, mccl_type, src, args->comm, stream));
+  MCCLCHECK(mcclGroupEnd());
+}
+
+static void sendrecv_getBw(size_t sendBytes, size_t recvBytes, int nranks,
+                           double timeSec, double *algbw, double *busbw) {
+  (void)nranks;
+  if (timeSec <= 0.0) {
+    *algbw = 0.0;
+    *busbw = 0.0;
+    return;
+  }
+  double bytes = (double)(sendBytes + recvBytes);
+  *algbw = bytes / timeSec / 1e9;
+  *busbw = *algbw;
+}
+
+static int sendrecv_checkData(threadArgs_t *args, int root, DataType type,
+                              RedOp op, int in_place) {
+  (void)op;
+  (void)in_place;
+  return verifiable_check_sendrecv(args, root, type);
+}
+
+static size_t sendrecv_getInplaceOffset(size_t sendBytes, size_t recvBytes,
+                                        int nranks, int rank) {
+  (void)sendBytes;
+  (void)recvBytes;
+  (void)nranks;
+  (void)rank;
+  return 0;
+}
+
+testEngine_t mcclTestEngine = {
+    .name = "sendrecv",
+    .defaultSizeBytes = (1 << 18) * sizeof(float),
+    .supportsInplace = 0,
+    .defaultType = DATA_FLOAT32,
+    .defaultTypeName = "float32",
+    .defaultOp = OP_NONE,
+    .defaultOpName = "none",
+    .defaultRoot = 0,
+    .countMode = COUNT_FROM_SEND,
+    .getBuffSize = sendrecv_getBuffSize,
+    .initData = sendrecv_initData,
+    .runTest = sendrecv_runTest,
+    .getInplaceOffset = sendrecv_getInplaceOffset,
+    .getBw = sendrecv_getBw,
+    .checkData = sendrecv_checkData,
+};

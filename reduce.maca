@@ -1,0 +1,75 @@
+// Reduce engine plugin (mccl-test)
+#include "common.h"
+#include "verifiable.h"
+
+static void reduce_getBuffSize(size_t *sendBytes, size_t *recvBytes,
+                               size_t countBytes, int nranks,
+                               size_t typeSize) {
+  (void)nranks;
+  (void)typeSize;
+  *sendBytes = countBytes;
+  *recvBytes = countBytes;
+}
+
+static void reduce_initData(threadArgs_t *args, int root, DataType type,
+                            RedOp op, int in_place) {
+  (void)op;
+  verifiable_init_reduce(args, root, type, in_place);
+}
+
+static void reduce_runTest(threadArgs_t *args, int root, DataType type,
+                           RedOp op, const void *sendbuff, void *recvbuff,
+                           mcStream_t stream) {
+  mcclDataType_t mccl_type = toMcclType(type);
+  mcclRedOp_t mccl_op = (op == OP_SUM) ? mcclSum : mcclSum;
+  MCCLCHECK(mcclReduce(sendbuff, recvbuff, args->count, mccl_type, mccl_op, root,
+                       args->comm, stream));
+}
+
+static void reduce_getBw(size_t sendBytes, size_t recvBytes, int nranks,
+                         double timeSec, double *algbw, double *busbw) {
+  (void)recvBytes;
+  (void)nranks;
+  if (timeSec <= 0.0) {
+    *algbw = 0.0;
+    *busbw = 0.0;
+    return;
+  }
+  double bytes = (double)sendBytes;
+  *algbw = bytes / timeSec / 1e9;
+  *busbw = *algbw;
+}
+
+static int reduce_checkData(threadArgs_t *args, int root, DataType type,
+                            RedOp op, int in_place) {
+  (void)op;
+  (void)in_place;
+  return verifiable_check_reduce(args, root, type);
+}
+
+static size_t reduce_getInplaceOffset(size_t sendBytes, size_t recvBytes,
+                                      int nranks, int rank) {
+  (void)sendBytes;
+  (void)recvBytes;
+  (void)nranks;
+  (void)rank;
+  return 0;
+}
+
+testEngine_t mcclTestEngine = {
+    .name = "reduce",
+    .defaultSizeBytes = (1 << 20) * sizeof(float),
+    .supportsInplace = 0,
+    .defaultType = DATA_FLOAT32,
+    .defaultTypeName = "float32",
+    .defaultOp = OP_SUM,
+    .defaultOpName = "sum",
+    .defaultRoot = 0,
+    .countMode = COUNT_FROM_SEND,
+    .getBuffSize = reduce_getBuffSize,
+    .initData = reduce_initData,
+    .runTest = reduce_runTest,
+    .getInplaceOffset = reduce_getInplaceOffset,
+    .getBw = reduce_getBw,
+    .checkData = reduce_checkData,
+};

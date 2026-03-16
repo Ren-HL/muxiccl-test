@@ -1,0 +1,86 @@
+// AllGather engine plugin (mccl-test)
+#include "common.h"
+#include "verifiable.h"
+
+static void allgather_getBuffSize(size_t *sendBytes, size_t *recvBytes,
+                                  size_t countBytes, int nranks,
+                                  size_t typeSize) {
+  // Align per-rank payload to 16 bytes, then scale receive by nranks.
+  size_t alignBytes = 16;
+  if (typeSize > 0 && typeSize < alignBytes) {
+    size_t alignElems = alignBytes / typeSize;
+    size_t count = countBytes / typeSize;
+    size_t alignedCount = ((count + alignElems - 1) / alignElems) * alignElems;
+    size_t aligned = alignedCount * typeSize;
+    *sendBytes = aligned;
+    *recvBytes = aligned * (size_t)nranks;
+    return;
+  }
+  size_t aligned = (countBytes + 15) & ~(size_t)15;
+  *sendBytes = aligned;
+  *recvBytes = aligned * (size_t)nranks;
+}
+
+static void allgather_initData(threadArgs_t *args, int root, DataType type,
+                               RedOp op, int in_place) {
+  (void)op;
+  verifiable_init_allgather(args, root, type, in_place);
+}
+
+static void allgather_runTest(threadArgs_t *args, int root, DataType type,
+                              RedOp op, const void *sendbuff, void *recvbuff,
+                              mcStream_t stream) {
+  (void)root;
+  (void)op;
+  // AllGather concatenates per-rank payloads in rank order.
+  mcclDataType_t mccl_type = toMcclType(type);
+  MCCLCHECK(mcclAllGather(sendbuff, recvbuff, args->count, mccl_type, args->comm,
+                          stream));
+}
+
+static void allgather_getBw(size_t sendBytes, size_t recvBytes, int nranks,
+                            double timeSec, double *algbw, double *busbw) {
+  (void)sendBytes;
+  (void)nranks;
+  if (timeSec <= 0.0) {
+    *algbw = 0.0;
+    *busbw = 0.0;
+    return;
+  }
+  // Use total receive payload as algorithmic bytes.
+  double bytes = (double)recvBytes;
+  *algbw = bytes / timeSec / 1e9;
+  *busbw = *algbw;
+}
+
+static int allgather_checkData(threadArgs_t *args, int root, DataType type,
+                               RedOp op, int in_place) {
+  (void)op;
+  (void)in_place;
+  return verifiable_check_allgather(args, root, type);
+}
+
+static size_t allgather_getInplaceOffset(size_t sendBytes, size_t recvBytes,
+                                         int nranks, int rank) {
+  (void)recvBytes;
+  (void)nranks;
+  return sendBytes * (size_t)rank;
+}
+
+testEngine_t mcclTestEngine = {
+    .name = "allgather",
+    .defaultSizeBytes = (1 << 18) * sizeof(float),
+    .supportsInplace = 1,
+    .defaultType = DATA_FLOAT32,
+    .defaultTypeName = "float32",
+    .defaultOp = OP_NONE,
+    .defaultOpName = "none",
+    .defaultRoot = 0,
+    .countMode = COUNT_FROM_SEND,
+    .getBuffSize = allgather_getBuffSize,
+    .initData = allgather_initData,
+    .runTest = allgather_runTest,
+    .getInplaceOffset = allgather_getInplaceOffset,
+    .getBw = allgather_getBw,
+    .checkData = allgather_checkData,
+};
