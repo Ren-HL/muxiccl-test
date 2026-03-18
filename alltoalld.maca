@@ -1,0 +1,103 @@
+#include "common.h"
+#include "verifiable.h"
+
+static void alltoalld_getBuffSize(size_t *sendBytes, size_t *recvBytes,
+                                  size_t countBytes, int nranks,
+                                  size_t typeSize) {
+  (void)typeSize;
+  *sendBytes = countBytes * (size_t)nranks;
+  *recvBytes = countBytes * (size_t)nranks;
+}
+
+static void alltoalld_initData(threadArgs_t *args, int root, DataType type,
+                               RedOp op, int in_place) {
+  (void)op;
+  verifiable_init_alltoall(args, root, type, in_place);
+}
+
+static void alltoalld_runTest(threadArgs_t *args, int root, DataType type,
+                              RedOp op, const void *sendbuff, void *recvbuff,
+                              mcStream_t stream) {
+  (void)root;
+  (void)op;
+
+  const void **sendptrs =
+      (const void **)malloc((size_t)args->nranks * sizeof(const void *));
+  char **recvptrs = (char **)malloc((size_t)args->nranks * sizeof(char *));
+  size_t *sendcounts = (size_t *)malloc((size_t)args->nranks * sizeof(size_t));
+  size_t *recvcounts = (size_t *)malloc((size_t)args->nranks * sizeof(size_t));
+  if (!sendptrs || !recvptrs || !sendcounts || !recvcounts) {
+    printf("Host allocation failed in alltoalld\n");
+    exit(EXIT_FAILURE);
+  }
+
+  size_t elem_size = dtypeSize(type);
+  size_t chunk_bytes = args->count * elem_size;
+  const char *send_base = (const char *)sendbuff;
+  char *recv_base = (char *)recvbuff;
+
+  for (int peer = 0; peer < args->nranks; peer++) {
+    sendptrs[peer] = (const void *)(send_base + (size_t)peer * chunk_bytes);
+    recvptrs[peer] = recv_base + (size_t)peer * chunk_bytes;
+    sendcounts[peer] = args->count;
+    recvcounts[peer] = args->count;
+  }
+
+  mcclDataType_t mccl_type = toMcclType(type);
+  MCCLCHECK(mcclAllToAlld((const void **)sendptrs, sendcounts,
+                          (void **)recvptrs, recvcounts, mccl_type, args->comm,
+                          stream));
+
+  free(sendptrs);
+  free(recvptrs);
+  free(sendcounts);
+  free(recvcounts);
+}
+
+static void alltoalld_getBw(size_t sendBytes, size_t recvBytes, int nranks,
+                            double timeSec, double *algbw, double *busbw) {
+  (void)nranks;
+  if (timeSec <= 0.0) {
+    *algbw = 0.0;
+    *busbw = 0.0;
+    return;
+  }
+
+  double bytes = (double)(sendBytes + recvBytes);
+  *algbw = bytes / timeSec / 1e9;
+  *busbw = *algbw;
+}
+
+static int alltoalld_checkData(threadArgs_t *args, int root, DataType type,
+                               RedOp op, int in_place) {
+  (void)op;
+  (void)in_place;
+  return verifiable_check_alltoall(args, root, type);
+}
+
+static size_t alltoalld_getInplaceOffset(size_t sendBytes, size_t recvBytes,
+                                         int nranks, int rank) {
+  (void)sendBytes;
+  (void)recvBytes;
+  (void)nranks;
+  (void)rank;
+  return 0;
+}
+
+testEngine_t mcclTestEngine = {
+    .name = "alltoalld",
+    .defaultSizeBytes = (1 << 18) * sizeof(float),
+    .supportsInplace = 0,
+    .defaultType = DATA_FLOAT32,
+    .defaultTypeName = "float32",
+    .defaultOp = OP_NONE,
+    .defaultOpName = "none",
+    .defaultRoot = 0,
+    .countMode = COUNT_FROM_RECV_DIV_NRANKS,
+    .getBuffSize = alltoalld_getBuffSize,
+    .initData = alltoalld_initData,
+    .runTest = alltoalld_runTest,
+    .getInplaceOffset = alltoalld_getInplaceOffset,
+    .getBw = alltoalld_getBw,
+    .checkData = alltoalld_checkData,
+};

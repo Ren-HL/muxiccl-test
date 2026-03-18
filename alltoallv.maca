@@ -1,0 +1,96 @@
+#include "common.h"
+#include "verifiable.h"
+
+static void alltoallv_getBuffSize(size_t *sendBytes, size_t *recvBytes,
+                                  size_t countBytes, int nranks,
+                                  size_t typeSize) {
+  (void)typeSize;
+  *sendBytes = countBytes * (size_t)nranks;
+  *recvBytes = countBytes * (size_t)nranks;
+}
+
+static void alltoallv_initData(threadArgs_t *args, int root, DataType type,
+                               RedOp op, int in_place) {
+  (void)op;
+  verifiable_init_alltoall(args, root, type, in_place);
+}
+
+static void alltoallv_runTest(threadArgs_t *args, int root, DataType type,
+                              RedOp op, const void *sendbuff, void *recvbuff,
+                              mcStream_t stream) {
+  (void)root;
+  (void)op;
+
+  size_t *sendcounts = (size_t *)malloc((size_t)args->nranks * sizeof(size_t));
+  size_t *recvcounts = (size_t *)malloc((size_t)args->nranks * sizeof(size_t));
+  size_t *sdispls = (size_t *)malloc((size_t)args->nranks * sizeof(size_t));
+  size_t *rdispls = (size_t *)malloc((size_t)args->nranks * sizeof(size_t));
+  if (!sendcounts || !recvcounts || !sdispls || !rdispls) {
+    printf("Host allocation failed in alltoallv\n");
+    exit(EXIT_FAILURE);
+  }
+
+  for (int peer = 0; peer < args->nranks; peer++) {
+    sendcounts[peer] = args->count;
+    recvcounts[peer] = args->count;
+    sdispls[peer] = (size_t)peer * args->count;
+    rdispls[peer] = (size_t)peer * args->count;
+  }
+
+  mcclDataType_t mccl_type = toMcclType(type);
+  MCCLCHECK(mcclAllToAllv(sendbuff, sendcounts, sdispls, recvbuff, recvcounts,
+                          rdispls, mccl_type, args->comm, stream));
+
+  free(sendcounts);
+  free(recvcounts);
+  free(sdispls);
+  free(rdispls);
+}
+
+static void alltoallv_getBw(size_t sendBytes, size_t recvBytes, int nranks,
+                            double timeSec, double *algbw, double *busbw) {
+  (void)nranks;
+  if (timeSec <= 0.0) {
+    *algbw = 0.0;
+    *busbw = 0.0;
+    return;
+  }
+
+  double bytes = (double)(sendBytes + recvBytes);
+  *algbw = bytes / timeSec / 1e9;
+  *busbw = *algbw;
+}
+
+static int alltoallv_checkData(threadArgs_t *args, int root, DataType type,
+                               RedOp op, int in_place) {
+  (void)op;
+  (void)in_place;
+  return verifiable_check_alltoall(args, root, type);
+}
+
+static size_t alltoallv_getInplaceOffset(size_t sendBytes, size_t recvBytes,
+                                         int nranks, int rank) {
+  (void)sendBytes;
+  (void)recvBytes;
+  (void)nranks;
+  (void)rank;
+  return 0;
+}
+
+testEngine_t mcclTestEngine = {
+    .name = "alltoallv",
+    .defaultSizeBytes = (1 << 18) * sizeof(float),
+    .supportsInplace = 0,
+    .defaultType = DATA_FLOAT32,
+    .defaultTypeName = "float32",
+    .defaultOp = OP_NONE,
+    .defaultOpName = "none",
+    .defaultRoot = 0,
+    .countMode = COUNT_FROM_RECV_DIV_NRANKS,
+    .getBuffSize = alltoallv_getBuffSize,
+    .initData = alltoallv_initData,
+    .runTest = alltoallv_runTest,
+    .getInplaceOffset = alltoallv_getInplaceOffset,
+    .getBw = alltoallv_getBw,
+    .checkData = alltoallv_checkData,
+};

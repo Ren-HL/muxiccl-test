@@ -36,7 +36,7 @@ if [[ "${1:-}" == "--all" ]]; then
   exit 0
 fi
 
-read -r -p "请输入要编译的.maca文件名 (例如: allreduce.maca/allgather.maca/broadcast.maca/reduce.maca): " source_file
+read -r -p "请输入要编译的.maca文件名 (例如: allreduce.maca/allgather.maca/alltoall.maca/alltoallv.maca/alltoalld.maca): " source_file
 if [[ -z "${source_file}" ]]; then
   echo "未提供文件名，已退出。"
   exit 1

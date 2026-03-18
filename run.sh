@@ -38,7 +38,7 @@ if [[ "${1:-}" == "-l" || "${1:-}" == "--log" ]]; then
   shift 2
 fi
 
-read -r -p "请输入要运行的程序文件名 (例如: allreduce_perf 或 allgather_perf): " target
+read -r -p "请输入要运行的程序文件名 (例如: allreduce_perf/allgather_perf/alltoall_perf/alltoallv_perf/alltoalld_perf): " target
 if [[ -z "${target}" ]]; then
   echo "未提供文件名，已退出。"
   exit 1
