@@ -29,13 +29,14 @@ static void allgather_initData(threadArgs_t *args, int root, DataType type,
 
 static void allgather_runTest(threadArgs_t *args, int root, DataType type,
                               RedOp op, const void *sendbuff, void *recvbuff,
-                              mcStream_t stream) {
+                              rtStream_t stream) {
   (void)root;
   (void)op;
   // AllGather concatenates per-rank payloads in rank order.
-  mcclDataType_t mccl_type = toMcclType(type);
-  MCCLCHECK(mcclAllGather(sendbuff, recvbuff, args->count, mccl_type, args->comm,
-                          stream));
+  cclDataType_t ccl_type = toCclType(type);
+  CCLCHECK(
+      cclAllGather(sendbuff, recvbuff, args->count, ccl_type, args->comm,
+                   stream));
 }
 
 static void allgather_getBw(size_t sendBytes, size_t recvBytes, int nranks,
@@ -67,7 +68,7 @@ static size_t allgather_getInplaceOffset(size_t sendBytes, size_t recvBytes,
   return sendBytes * (size_t)rank;
 }
 
-testEngine_t mcclTestEngine = {
+testEngine_t cclTestEngine = {
     .name = "allgather",
     .defaultSizeBytes = (1 << 18) * sizeof(float),
     .supportsInplace = 1,

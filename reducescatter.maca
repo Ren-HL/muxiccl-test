@@ -18,12 +18,12 @@ static void reducescatter_initData(threadArgs_t *args, int root, DataType type,
 
 static void reducescatter_runTest(threadArgs_t *args, int root, DataType type,
                                   RedOp op, const void *sendbuff,
-                                  void *recvbuff, mcStream_t stream) {
+                                  void *recvbuff, rtStream_t stream) {
   (void)root;
-  mcclDataType_t mccl_type = toMcclType(type);
-  mcclRedOp_t mccl_op = (op == OP_SUM) ? mcclSum : mcclSum;
-  MCCLCHECK(mcclReduceScatter(sendbuff, recvbuff, args->count, mccl_type,
-                              mccl_op, args->comm, stream));
+  cclDataType_t ccl_type = toCclType(type);
+  cclRedOp_t ccl_op = (op == OP_SUM) ? cclSum : cclSum;
+  CCLCHECK(cclReduceScatter(sendbuff, recvbuff, args->count, ccl_type, ccl_op,
+                            args->comm, stream));
 }
 
 static void reducescatter_getBw(size_t sendBytes, size_t recvBytes, int nranks,
@@ -57,7 +57,7 @@ static size_t reducescatter_getInplaceOffset(size_t sendBytes, size_t recvBytes,
   return 0;
 }
 
-testEngine_t mcclTestEngine = {
+testEngine_t cclTestEngine = {
     .name = "reducescatter",
     .defaultSizeBytes = (1 << 18) * sizeof(float),
     .supportsInplace = 0,

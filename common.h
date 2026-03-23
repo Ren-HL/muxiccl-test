@@ -7,28 +7,7 @@
 #include <stdint.h>
 #include <unistd.h>
 
-#include "mc_runtime.h"
-#include "mccl.h"
-
-#define MCCHECK(cmd)                                                           \
-  do {                                                                         \
-    mcError_t err = cmd;                                                       \
-    if (err != mcSuccess) {                                                    \
-      printf("Failed: MACA error %s:%d '%s'\n", __FILE__, __LINE__,            \
-             mcGetErrorString(err));                                           \
-      exit(EXIT_FAILURE);                                                      \
-    }                                                                          \
-  } while (0)
-
-#define MCCLCHECK(cmd)                                                         \
-  do {                                                                         \
-    mcclResult_t res = cmd;                                                    \
-    if (res != mcclSuccess) {                                                  \
-      printf("Failed, MCCL error %s:%d '%s'\n", __FILE__, __LINE__,            \
-             mcclGetErrorString(res));                                         \
-      exit(EXIT_FAILURE);                                                      \
-    }                                                                          \
-  } while (0)
+#include "sdk_adapter.h"
 
 typedef enum {
   DATA_INT8 = 0,
@@ -98,12 +77,12 @@ typedef struct threadArgs {
   size_t in_place_offset;
   int send_is_alias;
   int check_phase;
-  mcclUniqueId commId;
-  mcclComm_t *comms;
-  mcclComm_t comm;
-  mcStream_t stream;
-  mcEvent_t start;
-  mcEvent_t stop;
+  cclUniqueId_t commId;
+  cclComm_t *comms;
+  cclComm_t comm;
+  rtStream_t stream;
+  rtEvent_t start;
+  rtEvent_t stop;
   void *base_sendbuff;
   void *base_recvbuff;
   void *sendbuff;
@@ -142,7 +121,7 @@ typedef struct testEngine {
                    int in_place);
   // Enqueue one collective operation into the stream.
   void (*runTest)(threadArgs_t *args, int root, DataType type, RedOp op,
-                  const void *sendbuff, void *recvbuff, mcStream_t stream);
+                  const void *sendbuff, void *recvbuff, rtStream_t stream);
   // Return byte offset into recv buffer for in-place send region.
   size_t (*getInplaceOffset)(size_t sendBytes, size_t recvBytes, int nranks,
                              int rank);
@@ -154,13 +133,13 @@ typedef struct testEngine {
                    int in_place);
 } testEngine_t;
 
-extern testEngine_t mcclTestEngine;
+extern testEngine_t cclTestEngine;
 
 int get_device_count();
 int apply_env_override(int devicecount);
 size_t dtypeSize(DataType dt);
 const char *dtypeName(DataType dt);
-mcclDataType_t toMcclType(DataType dt);
+cclDataType_t toCclType(DataType dt);
 int dtypeSupported(DataType dt);
 const DataType *getAllDtypes(int *count);
 int parseDataType(const char *name, DataType *out);

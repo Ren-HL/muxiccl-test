@@ -317,7 +317,7 @@ static __global__ void kernel_check_reducescatter(const void *base, DataType dt,
 }
 
 static void device_set_scalar(void *base, DataType type, float fval,
-                              int32_t ival, mcStream_t stream) {
+                              int32_t ival, rtStream_t stream) {
   kernel_set_value<<<1, 1, 0, stream>>>(base, type, 0, fval, ival);
 }
 
@@ -330,15 +330,15 @@ static void device_fill_samples(threadArgs_t *args, DataType type,
     return;
   }
   size_t *d_samples = NULL;
-  MCCHECK(mcMalloc(&d_samples, (size_t)n * sizeof(size_t)));
-  MCCHECK(mcMemcpy(d_samples, samples, (size_t)n * sizeof(size_t),
-                   mcMemcpyHostToDevice));
+  DEVCHECK(rtMalloc(&d_samples, (size_t)n * sizeof(size_t)));
+  DEVCHECK(rtMemcpy(d_samples, samples, (size_t)n * sizeof(size_t),
+                    rtMemcpyHostToDevice));
   int block = 256;
   int grid = (n + block - 1) / block;
   kernel_fill_samples<<<grid, block, 0, args->stream>>>(
       args->sendbuff, type, d_samples, n, 0, base_val, alpha);
-  MCCHECK(mcStreamSynchronize(args->stream));
-  MCCHECK(mcFree(d_samples));
+  DEVCHECK(rtStreamSynchronize(args->stream));
+  DEVCHECK(rtFree(d_samples));
 }
 
 static void device_fill_samples_offset(threadArgs_t *args, DataType type,
@@ -351,16 +351,16 @@ static void device_fill_samples_offset(threadArgs_t *args, DataType type,
     return;
   }
   size_t *d_samples = NULL;
-  MCCHECK(mcMalloc(&d_samples, (size_t)n * sizeof(size_t)));
-  MCCHECK(mcMemcpy(d_samples, samples, (size_t)n * sizeof(size_t),
-                   mcMemcpyHostToDevice));
+  DEVCHECK(rtMalloc(&d_samples, (size_t)n * sizeof(size_t)));
+  DEVCHECK(rtMemcpy(d_samples, samples, (size_t)n * sizeof(size_t),
+                    rtMemcpyHostToDevice));
   int block = 256;
   int grid = (n + block - 1) / block;
   kernel_fill_samples<<<grid, block, 0, args->stream>>>(
       (char *)args->sendbuff + offset, type, d_samples, n, idx_offset, base_val,
       alpha);
-  MCCHECK(mcStreamSynchronize(args->stream));
-  MCCHECK(mcFree(d_samples));
+  DEVCHECK(rtStreamSynchronize(args->stream));
+  DEVCHECK(rtFree(d_samples));
 }
 
 static int device_check_reduce_like(threadArgs_t *args, DataType type,
@@ -373,11 +373,11 @@ static int device_check_reduce_like(threadArgs_t *args, DataType type,
   }
   size_t *d_samples = NULL;
   int *d_errors = NULL;
-  MCCHECK(mcMalloc(&d_samples, (size_t)n * sizeof(size_t)));
-  MCCHECK(mcMalloc(&d_errors, sizeof(int)));
-  MCCHECK(mcMemcpy(d_samples, samples, (size_t)n * sizeof(size_t),
-                   mcMemcpyHostToDevice));
-  MCCHECK(mcMemset(d_errors, 0, sizeof(int)));
+  DEVCHECK(rtMalloc(&d_samples, (size_t)n * sizeof(size_t)));
+  DEVCHECK(rtMalloc(&d_errors, sizeof(int)));
+  DEVCHECK(rtMemcpy(d_samples, samples, (size_t)n * sizeof(size_t),
+                    rtMemcpyHostToDevice));
+  DEVCHECK(rtMemset(d_errors, 0, sizeof(int)));
   float atol = 0.0f;
   float rtol = 0.0f;
   dtypeGetTolerances(type, &atol, &rtol);
@@ -391,11 +391,11 @@ static int device_check_reduce_like(threadArgs_t *args, DataType type,
   kernel_check_reduce<<<grid, block, 0, args->stream>>>(
       args->recvbuff, type, d_samples, n, args->nranks, alpha, atol, rtol,
       d_errors);
-  MCCHECK(mcStreamSynchronize(args->stream));
+  DEVCHECK(rtStreamSynchronize(args->stream));
   int errors = 0;
-  MCCHECK(mcMemcpy(&errors, d_errors, sizeof(int), mcMemcpyDeviceToHost));
-  MCCHECK(mcFree(d_samples));
-  MCCHECK(mcFree(d_errors));
+  DEVCHECK(rtMemcpy(&errors, d_errors, sizeof(int), rtMemcpyDeviceToHost));
+  DEVCHECK(rtFree(d_samples));
+  DEVCHECK(rtFree(d_errors));
   return errors;
 }
 
@@ -409,11 +409,11 @@ static int device_check_gather_like(threadArgs_t *args, DataType type,
   }
   size_t *d_samples = NULL;
   int *d_errors = NULL;
-  MCCHECK(mcMalloc(&d_samples, (size_t)n * sizeof(size_t)));
-  MCCHECK(mcMalloc(&d_errors, sizeof(int)));
-  MCCHECK(mcMemcpy(d_samples, samples, (size_t)n * sizeof(size_t),
-                   mcMemcpyHostToDevice));
-  MCCHECK(mcMemset(d_errors, 0, sizeof(int)));
+  DEVCHECK(rtMalloc(&d_samples, (size_t)n * sizeof(size_t)));
+  DEVCHECK(rtMalloc(&d_errors, sizeof(int)));
+  DEVCHECK(rtMemcpy(d_samples, samples, (size_t)n * sizeof(size_t),
+                    rtMemcpyHostToDevice));
+  DEVCHECK(rtMemset(d_errors, 0, sizeof(int)));
   float atol = 0.0f;
   float rtol = 0.0f;
   dtypeGetTolerances(type, &atol, &rtol);
@@ -428,11 +428,11 @@ static int device_check_gather_like(threadArgs_t *args, DataType type,
   kernel_check_gather<<<grid, block, 0, args->stream>>>(
       args->recvbuff, type, d_samples, n, args->count, args->nranks, alpha,
       atol, rtol, d_errors);
-  MCCHECK(mcStreamSynchronize(args->stream));
+  DEVCHECK(rtStreamSynchronize(args->stream));
   int errors = 0;
-  MCCHECK(mcMemcpy(&errors, d_errors, sizeof(int), mcMemcpyDeviceToHost));
-  MCCHECK(mcFree(d_samples));
-  MCCHECK(mcFree(d_errors));
+  DEVCHECK(rtMemcpy(&errors, d_errors, sizeof(int), rtMemcpyDeviceToHost));
+  DEVCHECK(rtFree(d_samples));
+  DEVCHECK(rtFree(d_errors));
   return errors;
 }
 
@@ -446,11 +446,11 @@ static int device_check_broadcast_like(threadArgs_t *args, DataType type,
   }
   size_t *d_samples = NULL;
   int *d_errors = NULL;
-  MCCHECK(mcMalloc(&d_samples, (size_t)n * sizeof(size_t)));
-  MCCHECK(mcMalloc(&d_errors, sizeof(int)));
-  MCCHECK(mcMemcpy(d_samples, samples, (size_t)n * sizeof(size_t),
-                   mcMemcpyHostToDevice));
-  MCCHECK(mcMemset(d_errors, 0, sizeof(int)));
+  DEVCHECK(rtMalloc(&d_samples, (size_t)n * sizeof(size_t)));
+  DEVCHECK(rtMalloc(&d_errors, sizeof(int)));
+  DEVCHECK(rtMemcpy(d_samples, samples, (size_t)n * sizeof(size_t),
+                    rtMemcpyHostToDevice));
+  DEVCHECK(rtMemset(d_errors, 0, sizeof(int)));
   float atol = 0.0f;
   float rtol = 0.0f;
   dtypeGetTolerances(type, &atol, &rtol);
@@ -463,11 +463,11 @@ static int device_check_broadcast_like(threadArgs_t *args, DataType type,
   int grid = (n + block - 1) / block;
   kernel_check_broadcast<<<grid, block, 0, args->stream>>>(
       args->recvbuff, type, d_samples, n, root, alpha, atol, rtol, d_errors);
-  MCCHECK(mcStreamSynchronize(args->stream));
+  DEVCHECK(rtStreamSynchronize(args->stream));
   int errors = 0;
-  MCCHECK(mcMemcpy(&errors, d_errors, sizeof(int), mcMemcpyDeviceToHost));
-  MCCHECK(mcFree(d_samples));
-  MCCHECK(mcFree(d_errors));
+  DEVCHECK(rtMemcpy(&errors, d_errors, sizeof(int), rtMemcpyDeviceToHost));
+  DEVCHECK(rtFree(d_samples));
+  DEVCHECK(rtFree(d_errors));
   return errors;
 }
 
@@ -481,11 +481,11 @@ static int device_check_reducescatter(threadArgs_t *args, DataType type,
   }
   size_t *d_samples = NULL;
   int *d_errors = NULL;
-  MCCHECK(mcMalloc(&d_samples, (size_t)n * sizeof(size_t)));
-  MCCHECK(mcMalloc(&d_errors, sizeof(int)));
-  MCCHECK(mcMemcpy(d_samples, samples, (size_t)n * sizeof(size_t),
-                   mcMemcpyHostToDevice));
-  MCCHECK(mcMemset(d_errors, 0, sizeof(int)));
+  DEVCHECK(rtMalloc(&d_samples, (size_t)n * sizeof(size_t)));
+  DEVCHECK(rtMalloc(&d_errors, sizeof(int)));
+  DEVCHECK(rtMemcpy(d_samples, samples, (size_t)n * sizeof(size_t),
+                    rtMemcpyHostToDevice));
+  DEVCHECK(rtMemset(d_errors, 0, sizeof(int)));
   float atol = 0.0f;
   float rtol = 0.0f;
   dtypeGetTolerances(type, &atol, &rtol);
@@ -494,11 +494,11 @@ static int device_check_reducescatter(threadArgs_t *args, DataType type,
   kernel_check_reducescatter<<<grid, block, 0, args->stream>>>(
       args->recvbuff, type, d_samples, n, args->count, args->rank, args->nranks,
       alpha, atol, rtol, d_errors);
-  MCCHECK(mcStreamSynchronize(args->stream));
+  DEVCHECK(rtStreamSynchronize(args->stream));
   int errors = 0;
-  MCCHECK(mcMemcpy(&errors, d_errors, sizeof(int), mcMemcpyDeviceToHost));
-  MCCHECK(mcFree(d_samples));
-  MCCHECK(mcFree(d_errors));
+  DEVCHECK(rtMemcpy(&errors, d_errors, sizeof(int), rtMemcpyDeviceToHost));
+  DEVCHECK(rtFree(d_samples));
+  DEVCHECK(rtFree(d_errors));
   return errors;
 }
 
@@ -506,9 +506,9 @@ void verifiable_init_allreduce(threadArgs_t *args, int root, DataType type,
                                int in_place) {
   (void)root;
   if (!args->check_phase) {
-    MCCHECK(mcMemset(args->sendbuff, 0, args->sendBytes));
+    DEVCHECK(rtMemset(args->sendbuff, 0, args->sendBytes));
     if (!in_place) {
-      MCCHECK(mcMemset(args->recvbuff, 0, args->recvBytes));
+      DEVCHECK(rtMemset(args->recvbuff, 0, args->recvBytes));
     }
     if (type == DATA_INT8 || type == DATA_INT32) {
       device_set_scalar(args->sendbuff, type, 0.0f, args->rank, args->stream);
@@ -516,14 +516,14 @@ void verifiable_init_allreduce(threadArgs_t *args, int root, DataType type,
       device_set_scalar(args->sendbuff, type, (float)args->rank, 0,
                         args->stream);
     }
-    MCCHECK(mcStreamSynchronize(args->stream));
+    DEVCHECK(rtStreamSynchronize(args->stream));
     return;
   }
 
   const float alpha = get_check_alpha();
-  MCCHECK(mcMemset(args->sendbuff, 0, args->sendBytes));
+  DEVCHECK(rtMemset(args->sendbuff, 0, args->sendBytes));
   if (!in_place) {
-    MCCHECK(mcMemset(args->recvbuff, 0, args->recvBytes));
+    DEVCHECK(rtMemset(args->recvbuff, 0, args->recvBytes));
   }
   device_fill_samples(args, type, args->rank, alpha);
 }
@@ -538,8 +538,8 @@ void verifiable_init_reduce(threadArgs_t *args, int root, DataType type,
                             int in_place) {
   (void)in_place;
   if (!args->check_phase) {
-    MCCHECK(mcMemset(args->sendbuff, 0, args->sendBytes));
-    MCCHECK(mcMemset(args->recvbuff, 0, args->recvBytes));
+    DEVCHECK(rtMemset(args->sendbuff, 0, args->sendBytes));
+    DEVCHECK(rtMemset(args->recvbuff, 0, args->recvBytes));
     if (type == DATA_INT8 || type == DATA_INT32) {
       device_set_scalar(args->sendbuff, type, 0.0f, args->rank, args->stream);
     } else {
@@ -547,18 +547,18 @@ void verifiable_init_reduce(threadArgs_t *args, int root, DataType type,
                         args->stream);
     }
     if (args->rank != root) {
-      MCCHECK(mcMemset(args->recvbuff, 0, args->recvBytes));
+      DEVCHECK(rtMemset(args->recvbuff, 0, args->recvBytes));
     }
-    MCCHECK(mcStreamSynchronize(args->stream));
+    DEVCHECK(rtStreamSynchronize(args->stream));
     return;
   }
 
   const float alpha = get_check_alpha();
-  MCCHECK(mcMemset(args->sendbuff, 0, args->sendBytes));
-  MCCHECK(mcMemset(args->recvbuff, 0, args->recvBytes));
+  DEVCHECK(rtMemset(args->sendbuff, 0, args->sendBytes));
+  DEVCHECK(rtMemset(args->recvbuff, 0, args->recvBytes));
   device_fill_samples(args, type, args->rank, alpha);
   if (args->rank != root) {
-    MCCHECK(mcMemset(args->recvbuff, 0, args->recvBytes));
+    DEVCHECK(rtMemset(args->recvbuff, 0, args->recvBytes));
   }
 }
 
@@ -575,21 +575,21 @@ void verifiable_init_allgather(threadArgs_t *args, int root, DataType type,
   (void)root;
   (void)in_place;
   if (!args->check_phase) {
-    MCCHECK(mcMemset(args->recvbuff, 0, args->recvBytes));
-    MCCHECK(mcMemset(args->sendbuff, 0, args->sendBytes));
+    DEVCHECK(rtMemset(args->recvbuff, 0, args->recvBytes));
+    DEVCHECK(rtMemset(args->sendbuff, 0, args->sendBytes));
     if (type == DATA_INT8 || type == DATA_INT32) {
       device_set_scalar(args->sendbuff, type, 0.0f, args->rank, args->stream);
     } else {
       device_set_scalar(args->sendbuff, type, (float)args->rank, 0,
                         args->stream);
     }
-    MCCHECK(mcStreamSynchronize(args->stream));
+    DEVCHECK(rtStreamSynchronize(args->stream));
     return;
   }
 
   const float alpha = get_check_alpha();
-  MCCHECK(mcMemset(args->recvbuff, 0, args->recvBytes));
-  MCCHECK(mcMemset(args->sendbuff, 0, args->sendBytes));
+  DEVCHECK(rtMemset(args->recvbuff, 0, args->recvBytes));
+  DEVCHECK(rtMemset(args->sendbuff, 0, args->sendBytes));
   device_fill_samples(args, type, args->rank, alpha);
 }
 
@@ -603,9 +603,9 @@ void verifiable_init_gather(threadArgs_t *args, int root, DataType type,
                             int in_place) {
   (void)in_place;
   if (!args->check_phase) {
-    MCCHECK(mcMemset(args->sendbuff, 0, args->sendBytes));
+    DEVCHECK(rtMemset(args->sendbuff, 0, args->sendBytes));
     if (args->rank == root) {
-      MCCHECK(mcMemset(args->recvbuff, 0, args->recvBytes));
+      DEVCHECK(rtMemset(args->recvbuff, 0, args->recvBytes));
     }
     if (type == DATA_INT8 || type == DATA_INT32) {
       device_set_scalar(args->sendbuff, type, 0.0f, args->rank, args->stream);
@@ -613,14 +613,14 @@ void verifiable_init_gather(threadArgs_t *args, int root, DataType type,
       device_set_scalar(args->sendbuff, type, (float)args->rank, 0,
                         args->stream);
     }
-    MCCHECK(mcStreamSynchronize(args->stream));
+    DEVCHECK(rtStreamSynchronize(args->stream));
     return;
   }
 
   const float alpha = get_check_alpha();
-  MCCHECK(mcMemset(args->sendbuff, 0, args->sendBytes));
+  DEVCHECK(rtMemset(args->sendbuff, 0, args->sendBytes));
   if (args->rank == root) {
-    MCCHECK(mcMemset(args->recvbuff, 0, args->recvBytes));
+    DEVCHECK(rtMemset(args->recvbuff, 0, args->recvBytes));
   }
   device_fill_samples(args, type, args->rank, alpha);
 }
@@ -637,23 +637,23 @@ void verifiable_init_broadcast(threadArgs_t *args, int root, DataType type,
                                int in_place) {
   (void)in_place;
   if (!args->check_phase) {
-    MCCHECK(mcMemset(args->recvbuff, 0, args->recvBytes));
+    DEVCHECK(rtMemset(args->recvbuff, 0, args->recvBytes));
     if (args->rank == root) {
-      MCCHECK(mcMemset(args->sendbuff, 0, args->sendBytes));
+      DEVCHECK(rtMemset(args->sendbuff, 0, args->sendBytes));
       if (type == DATA_INT8 || type == DATA_INT32) {
         device_set_scalar(args->sendbuff, type, 0.0f, root, args->stream);
       } else {
         device_set_scalar(args->sendbuff, type, (float)root, 0, args->stream);
       }
-      MCCHECK(mcStreamSynchronize(args->stream));
+      DEVCHECK(rtStreamSynchronize(args->stream));
     }
     return;
   }
 
   const float alpha = get_check_alpha();
-  MCCHECK(mcMemset(args->recvbuff, 0, args->recvBytes));
+  DEVCHECK(rtMemset(args->recvbuff, 0, args->recvBytes));
   if (args->rank == root) {
-    MCCHECK(mcMemset(args->sendbuff, 0, args->sendBytes));
+    DEVCHECK(rtMemset(args->sendbuff, 0, args->sendBytes));
     device_fill_samples(args, type, root, alpha);
   }
 }
@@ -668,21 +668,21 @@ void verifiable_init_reducescatter(threadArgs_t *args, int root, DataType type,
   (void)root;
   (void)in_place;
   if (!args->check_phase) {
-    MCCHECK(mcMemset(args->sendbuff, 0, args->sendBytes));
-    MCCHECK(mcMemset(args->recvbuff, 0, args->recvBytes));
+    DEVCHECK(rtMemset(args->sendbuff, 0, args->sendBytes));
+    DEVCHECK(rtMemset(args->recvbuff, 0, args->recvBytes));
     if (type == DATA_INT8 || type == DATA_INT32) {
       device_set_scalar(args->sendbuff, type, 0.0f, args->rank, args->stream);
     } else {
       device_set_scalar(args->sendbuff, type, (float)args->rank, 0,
                         args->stream);
     }
-    MCCHECK(mcStreamSynchronize(args->stream));
+    DEVCHECK(rtStreamSynchronize(args->stream));
     return;
   }
 
   const float alpha = get_check_alpha();
-  MCCHECK(mcMemset(args->sendbuff, 0, args->sendBytes));
-  MCCHECK(mcMemset(args->recvbuff, 0, args->recvBytes));
+  DEVCHECK(rtMemset(args->sendbuff, 0, args->sendBytes));
+  DEVCHECK(rtMemset(args->recvbuff, 0, args->recvBytes));
   size_t type_size = dtypeSize(type);
   for (int r = 0; r < args->nranks; r++) {
     size_t offset = (size_t)r * args->count * type_size;
@@ -702,23 +702,23 @@ void verifiable_init_scatter(threadArgs_t *args, int root, DataType type,
                              int in_place) {
   (void)in_place;
   if (!args->check_phase) {
-    MCCHECK(mcMemset(args->recvbuff, 0, args->recvBytes));
+    DEVCHECK(rtMemset(args->recvbuff, 0, args->recvBytes));
     if (args->rank == root) {
-      MCCHECK(mcMemset(args->sendbuff, 0, args->sendBytes));
+      DEVCHECK(rtMemset(args->sendbuff, 0, args->sendBytes));
       if (type == DATA_INT8 || type == DATA_INT32) {
         device_set_scalar(args->sendbuff, type, 0.0f, root, args->stream);
       } else {
         device_set_scalar(args->sendbuff, type, (float)root, 0, args->stream);
       }
-      MCCHECK(mcStreamSynchronize(args->stream));
+      DEVCHECK(rtStreamSynchronize(args->stream));
     }
     return;
   }
 
   const float alpha = get_check_alpha();
-  MCCHECK(mcMemset(args->recvbuff, 0, args->recvBytes));
+  DEVCHECK(rtMemset(args->recvbuff, 0, args->recvBytes));
   if (args->rank == root) {
-    MCCHECK(mcMemset(args->sendbuff, 0, args->sendBytes));
+    DEVCHECK(rtMemset(args->sendbuff, 0, args->sendBytes));
     size_t type_size = dtypeSize(type);
     for (int r = 0; r < args->nranks; r++) {
       size_t offset = (size_t)r * args->count * type_size;
@@ -738,21 +738,21 @@ void verifiable_init_sendrecv(threadArgs_t *args, int root, DataType type,
   (void)root;
   (void)in_place;
   if (!args->check_phase) {
-    MCCHECK(mcMemset(args->sendbuff, 0, args->sendBytes));
-    MCCHECK(mcMemset(args->recvbuff, 0, args->recvBytes));
+    DEVCHECK(rtMemset(args->sendbuff, 0, args->sendBytes));
+    DEVCHECK(rtMemset(args->recvbuff, 0, args->recvBytes));
     if (type == DATA_INT8 || type == DATA_INT32) {
       device_set_scalar(args->sendbuff, type, 0.0f, args->rank, args->stream);
     } else {
       device_set_scalar(args->sendbuff, type, (float)args->rank, 0,
                         args->stream);
     }
-    MCCHECK(mcStreamSynchronize(args->stream));
+    DEVCHECK(rtStreamSynchronize(args->stream));
     return;
   }
 
   const float alpha = get_check_alpha();
-  MCCHECK(mcMemset(args->sendbuff, 0, args->sendBytes));
-  MCCHECK(mcMemset(args->recvbuff, 0, args->recvBytes));
+  DEVCHECK(rtMemset(args->sendbuff, 0, args->sendBytes));
+  DEVCHECK(rtMemset(args->recvbuff, 0, args->recvBytes));
   device_fill_samples(args, type, args->rank, alpha);
 }
 
@@ -768,21 +768,21 @@ void verifiable_init_alltoall(threadArgs_t *args, int root, DataType type,
   (void)root;
   (void)in_place;
   if (!args->check_phase) {
-    MCCHECK(mcMemset(args->sendbuff, 0, args->sendBytes));
-    MCCHECK(mcMemset(args->recvbuff, 0, args->recvBytes));
+    DEVCHECK(rtMemset(args->sendbuff, 0, args->sendBytes));
+    DEVCHECK(rtMemset(args->recvbuff, 0, args->recvBytes));
     if (type == DATA_INT8 || type == DATA_INT32) {
       device_set_scalar(args->sendbuff, type, 0.0f, args->rank, args->stream);
     } else {
       device_set_scalar(args->sendbuff, type, (float)args->rank, 0,
                         args->stream);
     }
-    MCCHECK(mcStreamSynchronize(args->stream));
+    DEVCHECK(rtStreamSynchronize(args->stream));
     return;
   }
 
   const float alpha = get_check_alpha();
-  MCCHECK(mcMemset(args->sendbuff, 0, args->sendBytes));
-  MCCHECK(mcMemset(args->recvbuff, 0, args->recvBytes));
+  DEVCHECK(rtMemset(args->sendbuff, 0, args->sendBytes));
+  DEVCHECK(rtMemset(args->recvbuff, 0, args->recvBytes));
   size_t type_size = dtypeSize(type);
   for (int r = 0; r < args->nranks; r++) {
     size_t offset = (size_t)r * args->count * type_size;

@@ -19,11 +19,11 @@ static void reduce_initData(threadArgs_t *args, int root, DataType type,
 
 static void reduce_runTest(threadArgs_t *args, int root, DataType type,
                            RedOp op, const void *sendbuff, void *recvbuff,
-                           mcStream_t stream) {
-  mcclDataType_t mccl_type = toMcclType(type);
-  mcclRedOp_t mccl_op = (op == OP_SUM) ? mcclSum : mcclSum;
-  MCCLCHECK(mcclReduce(sendbuff, recvbuff, args->count, mccl_type, mccl_op, root,
-                       args->comm, stream));
+                           rtStream_t stream) {
+  cclDataType_t ccl_type = toCclType(type);
+  cclRedOp_t ccl_op = (op == OP_SUM) ? cclSum : cclSum;
+  CCLCHECK(cclReduce(sendbuff, recvbuff, args->count, ccl_type, ccl_op, root,
+                     args->comm, stream));
 }
 
 static void reduce_getBw(size_t sendBytes, size_t recvBytes, int nranks,
@@ -56,7 +56,7 @@ static size_t reduce_getInplaceOffset(size_t sendBytes, size_t recvBytes,
   return 0;
 }
 
-testEngine_t mcclTestEngine = {
+testEngine_t cclTestEngine = {
     .name = "reduce",
     .defaultSizeBytes = (1 << 20) * sizeof(float),
     .supportsInplace = 0,

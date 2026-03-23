@@ -17,7 +17,7 @@ static void alltoallv_initData(threadArgs_t *args, int root, DataType type,
 
 static void alltoallv_runTest(threadArgs_t *args, int root, DataType type,
                               RedOp op, const void *sendbuff, void *recvbuff,
-                              mcStream_t stream) {
+                              rtStream_t stream) {
   (void)root;
   (void)op;
 
@@ -37,9 +37,9 @@ static void alltoallv_runTest(threadArgs_t *args, int root, DataType type,
     rdispls[peer] = (size_t)peer * args->count;
   }
 
-  mcclDataType_t mccl_type = toMcclType(type);
-  MCCLCHECK(mcclAllToAllv(sendbuff, sendcounts, sdispls, recvbuff, recvcounts,
-                          rdispls, mccl_type, args->comm, stream));
+  cclDataType_t ccl_type = toCclType(type);
+  CCLCHECK(cclAllToAllv(sendbuff, sendcounts, sdispls, recvbuff, recvcounts,
+                        rdispls, ccl_type, args->comm, stream));
 
   free(sendcounts);
   free(recvcounts);
@@ -77,7 +77,7 @@ static size_t alltoallv_getInplaceOffset(size_t sendBytes, size_t recvBytes,
   return 0;
 }
 
-testEngine_t mcclTestEngine = {
+testEngine_t cclTestEngine = {
     .name = "alltoallv",
     .defaultSizeBytes = (1 << 18) * sizeof(float),
     .supportsInplace = 0,

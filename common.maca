@@ -7,16 +7,16 @@ typedef struct {
   DataType type;
   const char *name;
   size_t size;
-  mcclDataType_t mcclType;
+  cclDataType_t cclType;
   int supported;
 } DTypeInfo;
 
 static const DTypeInfo kDtypes[] = {
-    {DATA_INT8, "int8", sizeof(int8_t), mcclInt8, 1},
-    {DATA_INT32, "int32", sizeof(int32_t), mcclInt32, 1},
-    {DATA_FLOAT16, "float16", sizeof(uint16_t), mcclHalf, 1},
-    {DATA_BFLOAT16, "bf16", sizeof(uint16_t), mcclFloat16, 0},
-    {DATA_FLOAT32, "float32", sizeof(float), mcclFloat, 1},
+    {DATA_INT8, "int8", sizeof(int8_t), cclInt8, 1},
+    {DATA_INT32, "int32", sizeof(int32_t), cclInt32, 1},
+    {DATA_FLOAT16, "float16", sizeof(uint16_t), cclHalf, 1},
+    {DATA_BFLOAT16, "bf16", sizeof(uint16_t), cclFloat16, 0},
+    {DATA_FLOAT32, "float32", sizeof(float), cclFloat, 1},
 };
 
 static const DTypeInfo *get_dtype_info(DataType dt) {
@@ -39,7 +39,7 @@ static int get_env_int(const char *name, int default_value) {
 
 int get_device_count() {
   int devicecount = 0;
-  MCCHECK(mcGetDeviceCount(&devicecount));
+  DEVCHECK(rtGetDeviceCount(&devicecount));
   return devicecount;
 }
 
@@ -67,12 +67,12 @@ const char *dtypeName(DataType dt) {
   return info ? info->name : "unknown";
 }
 
-mcclDataType_t toMcclType(DataType dt) {
+cclDataType_t toCclType(DataType dt) {
   const DTypeInfo *info = get_dtype_info(dt);
   if (!info) {
-    return mcclFloat;
+    return cclFloat;
   }
-  return info->mcclType;
+  return info->cclType;
 }
 
 int dtypeSupported(DataType dt) {
@@ -444,7 +444,7 @@ static void startColl(threadArgs_t *targs) {
 }
 
 static void completeColl(threadArgs_t *targs) {
-  MCCHECK(mcStreamSynchronize(targs->stream));
+  DEVCHECK(rtStreamSynchronize(targs->stream));
 }
 
 static void timeTest(threadArgs_t *targs) {
@@ -469,7 +469,7 @@ static void timeTest(threadArgs_t *targs) {
 
   // Timed loop; average per collective (us).
   for (int i = 0; i < iters; i++) {
-    MCCHECK(mcEventRecord(targs->start, targs->stream));
+    DEVCHECK(rtEventRecord(targs->start, targs->stream));
     for (int j = 0; j < agg_iters; j++) {
       startColl(targs);
       if (blocking) {
@@ -479,10 +479,10 @@ static void timeTest(threadArgs_t *targs) {
     if (!blocking) {
       completeColl(targs);
     }
-    MCCHECK(mcEventRecord(targs->stop, targs->stream));
-    MCCHECK(mcEventSynchronize(targs->stop));
+    DEVCHECK(rtEventRecord(targs->stop, targs->stream));
+    DEVCHECK(rtEventSynchronize(targs->stop));
     float ms = 0.0f;
-    MCCHECK(mcEventElapsedTime(&ms, targs->start, targs->stop));
+    DEVCHECK(rtEventElapsedTime(&ms, targs->start, targs->stop));
     total_ms += (double)ms;
   }
 
@@ -493,39 +493,39 @@ static void timeTest(threadArgs_t *targs) {
 }
 
 static void initThreadResources(threadArgs_t *targs) {
-  MCCHECK(mcSetDevice(targs->rank));
-  MCCHECK(mcStreamCreate(&targs->stream));
-  MCCHECK(mcEventCreate(&targs->start));
-  MCCHECK(mcEventCreate(&targs->stop));
+  DEVCHECK(rtSetDevice(targs->rank));
+  DEVCHECK(rtStreamCreate(&targs->stream));
+  DEVCHECK(rtEventCreate(&targs->start));
+  DEVCHECK(rtEventCreate(&targs->stop));
 
   targs->base_sendbuff = NULL;
   targs->base_recvbuff = NULL;
   targs->send_is_alias = 0;
 
   // Allocate once for max size to avoid per-iteration malloc.
-  MCCHECK(mcMalloc(&targs->base_recvbuff, targs->test->maxRecvBytes));
+  DEVCHECK(rtMalloc(&targs->base_recvbuff, targs->test->maxRecvBytes));
   if (!targs->in_place) {
-    MCCHECK(mcMalloc(&targs->base_sendbuff, targs->test->maxSendBytes));
+    DEVCHECK(rtMalloc(&targs->base_sendbuff, targs->test->maxSendBytes));
   }
 
-  MCCLCHECK(mcclCommInitRank(&targs->comms[targs->rank], targs->nranks,
-                             targs->commId, targs->rank));
+  CCLCHECK(cclCommInitRank(&targs->comms[targs->rank], targs->nranks,
+                           targs->commId, targs->rank));
   targs->comm = targs->comms[targs->rank];
 }
 
 static void destroyThreadResources(threadArgs_t *targs) {
   if (targs->comm) {
-    MCCLCHECK(mcclCommDestroy(targs->comm));
+    CCLCHECK(cclCommDestroy(targs->comm));
   }
   if (targs->base_sendbuff) {
-    MCCHECK(mcFree(targs->base_sendbuff));
+    DEVCHECK(rtFree(targs->base_sendbuff));
   }
   if (targs->base_recvbuff) {
-    MCCHECK(mcFree(targs->base_recvbuff));
+    DEVCHECK(rtFree(targs->base_recvbuff));
   }
-  MCCHECK(mcEventDestroy(targs->start));
-  MCCHECK(mcEventDestroy(targs->stop));
-  MCCHECK(mcStreamDestroy(targs->stream));
+  DEVCHECK(rtEventDestroy(targs->start));
+  DEVCHECK(rtEventDestroy(targs->stop));
+  DEVCHECK(rtStreamDestroy(targs->stream));
 }
 
 static void configureBuffers(threadArgs_t *targs, const sizeInfo_t *info) {
@@ -602,7 +602,7 @@ static void *thread_main(void *arg) {
 static void run_mode(const testEngine_t *engine, testArgs_t *test, int in_place,
                      const sizeInfo_t *sizes, int nSizes, double *time_us,
                      double *algbw, double *busbw, int *errors) {
-  mcclComm_t *comms = (mcclComm_t *)malloc(test->nranks * sizeof(mcclComm_t));
+  cclComm_t *comms = (cclComm_t *)malloc(test->nranks * sizeof(cclComm_t));
   pthread_t *threads =
       (pthread_t *)malloc(test->nranks * sizeof(pthread_t));
   threadArgs_t *targs =
@@ -612,8 +612,8 @@ static void run_mode(const testEngine_t *engine, testArgs_t *test, int in_place,
 
   pthread_barrier_init(&barrier, NULL, test->nranks);
 
-  mcclUniqueId commId;
-  MCCLCHECK(mcclGetUniqueId(&commId));
+  cclUniqueId_t commId;
+  CCLCHECK(cclGetUniqueId(&commId));
 
   for (int r = 0; r < test->nranks; r++) {
     targs[r].rank = r;
@@ -658,7 +658,7 @@ static void run_mode(const testEngine_t *engine, testArgs_t *test, int in_place,
 }
 
 static void print_header(const testEngine_t *engine, int want_oop, int want_ip) {
-  printf("# mccl-test %s\n", engine->name);
+  printf("# ccl-test %s\n", engine->name);
   if (want_oop && want_ip) {
     printf("%12s %12s %8s %8s %6s %12s %12s %12s %12s %12s %12s %8s\n",
            "size(B)", "count", "type", "op", "root", "oop_time(us)",
@@ -757,7 +757,7 @@ static void run_for_dtype(const testEngine_t *engine, const testArgs_t *base,
 }
 
 int main(int argc, char **argv) {
-  const testEngine_t *engine = &mcclTestEngine;
+  const testEngine_t *engine = &cclTestEngine;
 
   int nranks = get_device_count();
   nranks = apply_env_override(nranks);
