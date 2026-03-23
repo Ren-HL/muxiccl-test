@@ -15,7 +15,7 @@ if [[ "${1:-}" == "--all" ]]; then
   fi
   log_file="allop.log"
   : >"${log_file}"
-  for target in *_perf; do
+  for target in *_perf*; do
     if [[ ! -f "${target}" ]]; then
       continue
     fi
